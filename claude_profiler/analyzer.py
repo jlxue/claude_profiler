@@ -201,10 +201,8 @@ def aggregate_stats(since: Optional[datetime] = None,
             "turns": 0,
             "events": 0,
             "sessions": [],
-            "ttft_avg": 0,
-            "ttft_max": 0,
-            "tpot_avg": 0,
-            "tpot_max": 0,
+            "ttft": {"avg": 0, "median": 0, "min": 0, "max": 0, "samples": 0},
+            "tpot": {"avg": 0, "median": 0, "min": 0, "max": 0, "samples": 0},
         }
 
     total_time = 0.0
@@ -265,12 +263,8 @@ def aggregate_stats(since: Optional[datetime] = None,
         "turns": turns,
         "events": total_events,
         "sessions": session_details,
-        "ttft_avg": _avg(all_ttft),
-        "ttft_max": max(all_ttft) if all_ttft else 0,
-        "tpot_avg": _avg(all_tpot),
-        "tpot_max": max(all_tpot) if all_tpot else 0,
-        "ttft_samples": len(all_ttft),
-        "tpot_samples": len(all_tpot),
+        "ttft": _list_stats(all_ttft),
+        "tpot": _list_stats(all_tpot),
         "prompt_tokens": _list_stats(all_prompt_tokens),
         "thinking_tokens": _list_stats(all_thinking_tokens),
         "response_tokens": _list_stats(all_response_tokens),
@@ -294,10 +288,11 @@ def _median(lst: list) -> float:
 def _list_stats(lst: list) -> dict:
     """Compute avg, median, max for a list of values."""
     if not lst:
-        return {"avg": 0, "median": 0, "max": 0, "samples": 0}
+        return {"avg": 0, "median": 0, "min": 0, "max": 0, "samples": 0}
     return {
         "avg": sum(lst) / len(lst),
         "median": _median(lst),
+        "min": min(lst),
         "max": max(lst),
         "samples": len(lst),
     }

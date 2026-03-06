@@ -20,6 +20,14 @@ from typing import List, Optional
 
 CLAUDE_DIR = os.path.expanduser("~/.claude")
 
+# Minimum output tokens for a call to be included in TPOT stats.
+# Calls with fewer tokens have unreliable timing measurements.
+MIN_TOKENS_FOR_TPOT = 10
+
+# Minimum generation time (seconds) for TPOT calculation.
+# Shorter durations are too noisy due to timestamp precision limits.
+MIN_GEN_TIME_FOR_TPOT = 2.0
+
 
 def _find_conversation_file(session_id: str) -> Optional[str]:
     """Find the conversation JSONL file for a given session ID."""
@@ -86,11 +94,23 @@ def compute_llm_metrics(session_id: str) -> dict:
     # Track state for each LLM call
     last_user_ts = None
     first_assistant_ts = None
+    first_response_ts = None  # first non-thinking assistant message
     last_assistant_ts = None
     call_output_tokens = 0
-    call_thinking_tokens = 0
     call_prompt_tokens = 0
-    seen_thinking = False
+    call_thinking_chars = 0  # character count of thinking content
+    call_text_chars = 0      # character count of text content
+    call_tool_chars = 0      # character count of tool_use input (JSON)
+
+    def _estimate_token_split():
+        """Estimate thinking vs response tokens using character ratio."""
+        total_chars = call_thinking_chars + call_text_chars + call_tool_chars
+        if total_chars > 0 and call_thinking_chars > 0:
+            thinking_ratio = call_thinking_chars / total_chars
+            est_thinking = int(call_output_tokens * thinking_ratio)
+        else:
+            est_thinking = 0
+        return est_thinking, call_output_tokens - est_thinking
 
     def _finalize():
         nonlocal calls
@@ -99,19 +119,38 @@ def compute_llm_metrics(session_id: str) -> dict:
             if ttft >= 0:
                 ttft_list.append(ttft)
 
-        if first_assistant_ts is not None and last_assistant_ts is not None \
-                and call_output_tokens > 1:
-            gen_time = last_assistant_ts - first_assistant_ts
-            if gen_time > 0:
-                tpot_list.append(gen_time / (call_output_tokens - 1))
+        est_thinking, est_response = _estimate_token_split()
+
+        # TPOT: use response tokens only and measure from first non-thinking
+        # message to avoid counting thinking time in gen_time while thinking
+        # tokens inflate the denominator.
+        tpot_start = first_response_ts or first_assistant_ts
+        if tpot_start is not None and last_assistant_ts is not None \
+                and est_response >= MIN_TOKENS_FOR_TPOT:
+            gen_time = last_assistant_ts - tpot_start
+            if gen_time >= MIN_GEN_TIME_FOR_TPOT:
+                tpot_list.append(gen_time / (est_response - 1))
 
         if call_prompt_tokens > 0:
             prompt_tokens_list.append(call_prompt_tokens)
         if call_output_tokens > 0:
-            thinking_tokens_list.append(call_thinking_tokens)
-            response_tokens_list.append(call_output_tokens - call_thinking_tokens)
+            thinking_tokens_list.append(est_thinking)
+            response_tokens_list.append(est_response)
 
         calls += 1
+
+    def _reset_call():
+        nonlocal first_assistant_ts, first_response_ts, last_assistant_ts
+        nonlocal call_output_tokens, call_prompt_tokens
+        nonlocal call_thinking_chars, call_text_chars, call_tool_chars
+        first_assistant_ts = None
+        first_response_ts = None
+        last_assistant_ts = None
+        call_output_tokens = 0
+        call_prompt_tokens = 0
+        call_thinking_chars = 0
+        call_text_chars = 0
+        call_tool_chars = 0
 
     for msg in messages:
         msg_type = msg.get("type")
@@ -130,12 +169,7 @@ def compute_llm_metrics(session_id: str) -> dict:
                 _finalize()
 
             last_user_ts = ts
-            first_assistant_ts = None
-            last_assistant_ts = None
-            call_output_tokens = 0
-            call_thinking_tokens = 0
-            call_prompt_tokens = 0
-            seen_thinking = False
+            _reset_call()
 
         elif msg_type == "assistant" and last_user_ts is not None:
             if first_assistant_ts is None:
@@ -146,8 +180,8 @@ def compute_llm_metrics(session_id: str) -> dict:
             inner = msg.get("message", {})
             usage = inner.get("usage", {})
             out_tok = usage.get("output_tokens")
-            if out_tok is not None:
-                call_output_tokens = out_tok  # cumulative
+            if out_tok is not None and out_tok > call_output_tokens:
+                call_output_tokens = out_tok  # take max (final msg has real total)
 
             # Prompt tokens = input + cache_read + cache_creation
             inp = usage.get("input_tokens", 0)
@@ -157,25 +191,30 @@ def compute_llm_metrics(session_id: str) -> dict:
             if total_prompt > call_prompt_tokens:
                 call_prompt_tokens = total_prompt
 
-            # Track thinking tokens from first thinking block
-            if not seen_thinking:
-                content = inner.get("content", [])
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "thinking":
-                        seen_thinking = True
-                        if out_tok is not None:
-                            call_thinking_tokens = out_tok
-                        break
+            # Accumulate character counts from content blocks
+            content = inner.get("content", [])
+            has_non_thinking = False
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "thinking":
+                    call_thinking_chars += len(block.get("thinking", ""))
+                elif btype == "text":
+                    call_text_chars += len(block.get("text", ""))
+                    has_non_thinking = True
+                elif btype == "tool_use":
+                    call_tool_chars += len(json.dumps(block.get("input", {})))
+                    has_non_thinking = True
+
+            # Track first non-thinking message timestamp for TPOT
+            if has_non_thinking and first_response_ts is None:
+                first_response_ts = ts
 
             stop_reason = inner.get("stop_reason")
             if stop_reason in ("tool_use", "end_turn"):
                 _finalize()
-                first_assistant_ts = None
-                last_assistant_ts = None
-                call_output_tokens = 0
-                call_thinking_tokens = 0
-                call_prompt_tokens = 0
-                seen_thinking = False
+                _reset_call()
 
     # Handle unfinished call
     if first_assistant_ts is not None:
