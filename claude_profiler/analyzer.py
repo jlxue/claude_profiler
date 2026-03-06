@@ -218,6 +218,9 @@ def aggregate_stats(since: Optional[datetime] = None,
     session_details = []
     all_ttft = []
     all_tpot = []
+    all_prompt_tokens = []
+    all_thinking_tokens = []
+    all_response_tokens = []
 
     for session_info in sessions:
         events = load_session(session_info["session_id"])
@@ -235,10 +238,13 @@ def aggregate_stats(since: Optional[datetime] = None,
         for tool, cnt in result["tool_call_counts"].items():
             tool_call_counts[tool] += cnt
 
-        # Get TTFT/TPOT from conversation files
+        # Get TTFT/TPOT and token breakdown from conversation files
         llm_metrics = compute_llm_metrics(session_info["session_id"])
         all_ttft.extend(llm_metrics["ttft_list"])
         all_tpot.extend(llm_metrics["tpot_list"])
+        all_prompt_tokens.extend(llm_metrics["prompt_tokens_list"])
+        all_thinking_tokens.extend(llm_metrics["thinking_tokens_list"])
+        all_response_tokens.extend(llm_metrics["response_tokens_list"])
 
         session_details.append({
             **session_info,
@@ -259,12 +265,41 @@ def aggregate_stats(since: Optional[datetime] = None,
         "turns": turns,
         "events": total_events,
         "sessions": session_details,
-        "ttft_avg": sum(all_ttft) / len(all_ttft) if all_ttft else 0,
+        "ttft_avg": _avg(all_ttft),
         "ttft_max": max(all_ttft) if all_ttft else 0,
-        "tpot_avg": sum(all_tpot) / len(all_tpot) if all_tpot else 0,
+        "tpot_avg": _avg(all_tpot),
         "tpot_max": max(all_tpot) if all_tpot else 0,
         "ttft_samples": len(all_ttft),
         "tpot_samples": len(all_tpot),
+        "prompt_tokens": _list_stats(all_prompt_tokens),
+        "thinking_tokens": _list_stats(all_thinking_tokens),
+        "response_tokens": _list_stats(all_response_tokens),
+    }
+
+
+def _avg(lst: list) -> float:
+    return sum(lst) / len(lst) if lst else 0
+
+
+def _median(lst: list) -> float:
+    if not lst:
+        return 0
+    s = sorted(lst)
+    n = len(s)
+    if n % 2 == 1:
+        return s[n // 2]
+    return (s[n // 2 - 1] + s[n // 2]) / 2
+
+
+def _list_stats(lst: list) -> dict:
+    """Compute avg, median, max for a list of values."""
+    if not lst:
+        return {"avg": 0, "median": 0, "max": 0, "samples": 0}
+    return {
+        "avg": sum(lst) / len(lst),
+        "median": _median(lst),
+        "max": max(lst),
+        "samples": len(lst),
     }
 
 

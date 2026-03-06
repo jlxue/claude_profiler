@@ -155,9 +155,29 @@ def cmd_stats(args):
             print(f"      Average:  {format_duration(stats['ttft_avg']):>10s}  ({stats['ttft_samples']} samples)")
             print(f"      Max:      {format_duration(stats['ttft_max']):>10s}")
         if stats["tpot_samples"]:
+            tps_avg = 1.0 / stats["tpot_avg"] if stats["tpot_avg"] > 0 else 0
+            tps_min = 1.0 / stats["tpot_max"] if stats["tpot_max"] > 0 else 0
             print(f"    TPOT (Time Per Output Token):")
             print(f"      Average:  {stats['tpot_avg']*1000:>10.1f}ms  ({stats['tpot_samples']} samples)")
             print(f"      Max:      {stats['tpot_max']*1000:>10.1f}ms")
+            print(f"    TPS (Tokens Per Second):")
+            print(f"      Average:  {tps_avg:>10.1f}")
+            print(f"      Min:      {tps_min:>10.1f}")
+        print()
+
+    # Token Breakdown
+    pt = stats.get("prompt_tokens", {})
+    tt = stats.get("thinking_tokens", {})
+    rt = stats.get("response_tokens", {})
+    if pt.get("samples") or tt.get("samples") or rt.get("samples"):
+        print("  Token Breakdown (per LLM call):")
+        print(f"    {'':20s} {'Avg':>10s} {'Median':>10s} {'Max':>10s} {'Samples':>8s}")
+        if pt.get("samples"):
+            print(f"    {'Prompt tokens':<20s} {pt['avg']:>10.0f} {pt['median']:>10.0f} {pt['max']:>10.0f} {pt['samples']:>8d}")
+        if tt.get("samples"):
+            print(f"    {'Thinking tokens':<20s} {tt['avg']:>10.0f} {tt['median']:>10.0f} {tt['max']:>10.0f} {tt['samples']:>8d}")
+        if rt.get("samples"):
+            print(f"    {'Response tokens':<20s} {rt['avg']:>10.0f} {rt['median']:>10.0f} {rt['max']:>10.0f} {rt['samples']:>8d}")
         print()
 
     # Tool breakdown
@@ -255,7 +275,24 @@ def cmd_session_detail(args):
         if llm["tpot_list"]:
             avg_tpot = sum(llm["tpot_list"]) / len(llm["tpot_list"])
             max_tpot = max(llm["tpot_list"])
+            tps_avg = 1.0 / avg_tpot if avg_tpot > 0 else 0
             print(f"  TPOT avg: {avg_tpot*1000:.1f}ms  max: {max_tpot*1000:.1f}ms  ({len(llm['tpot_list'])} samples)")
+            print(f"  TPS  avg: {tps_avg:.1f} tokens/s")
+
+        # Token breakdown
+        from claude_profiler.analyzer import _list_stats
+        pt = _list_stats(llm["prompt_tokens_list"])
+        tt = _list_stats(llm["thinking_tokens_list"])
+        rt = _list_stats(llm["response_tokens_list"])
+        if pt["samples"] or tt["samples"] or rt["samples"]:
+            print(f"  Token Breakdown (per call):")
+            print(f"    {'':18s} {'Avg':>8s} {'Median':>8s} {'Max':>8s}")
+            if pt["samples"]:
+                print(f"    {'Prompt':<18s} {pt['avg']:>8.0f} {pt['median']:>8.0f} {pt['max']:>8.0f}")
+            if tt["samples"]:
+                print(f"    {'Thinking':<18s} {tt['avg']:>8.0f} {tt['median']:>8.0f} {tt['max']:>8.0f}")
+            if rt["samples"]:
+                print(f"    {'Response':<18s} {rt['avg']:>8.0f} {rt['median']:>8.0f} {rt['max']:>8.0f}")
         print()
 
     if result["tool_breakdown"]:

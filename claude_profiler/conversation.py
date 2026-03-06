@@ -51,7 +51,7 @@ def load_conversation(session_id: str) -> List[dict]:
 
 
 def compute_llm_metrics(session_id: str) -> dict:
-    """Compute TTFT and TPOT for each LLM call in a session.
+    """Compute TTFT, TPOT, and token breakdown for each LLM call in a session.
 
     An LLM call starts with a user message and ends when the assistant
     produces a terminal message (stop_reason = "tool_use" or "end_turn").
@@ -60,28 +60,58 @@ def compute_llm_metrics(session_id: str) -> dict:
     (thinking -> text -> tool_use). We track:
       - TTFT: time from user message to first assistant message
       - TPOT: (last_assistant_ts - first_assistant_ts) / (output_tokens - 1)
-              where output_tokens is from the terminal message's usage
+      - Token breakdown: prompt, thinking, response tokens per call
 
     Returns:
         {
-            "ttft_list": [float, ...],   # seconds per LLM call
-            "tpot_list": [float, ...],   # seconds per output token per LLM call
-            "calls": int,                # number of LLM calls
+            "ttft_list": [float, ...],
+            "tpot_list": [float, ...],
+            "prompt_tokens_list": [int, ...],
+            "thinking_tokens_list": [int, ...],
+            "response_tokens_list": [int, ...],
+            "calls": int,
         }
     """
     messages = load_conversation(session_id)
     if not messages:
-        return {"ttft_list": [], "tpot_list": [], "calls": 0}
+        return _empty_llm_metrics()
 
     ttft_list = []
     tpot_list = []
+    prompt_tokens_list = []
+    thinking_tokens_list = []
+    response_tokens_list = []
     calls = 0
 
     # Track state for each LLM call
-    last_user_ts = None  # timestamp of most recent user message
-    first_assistant_ts = None  # timestamp of first assistant msg in current call
-    last_assistant_ts = None  # timestamp of last assistant msg in current call
-    call_output_tokens = 0  # cumulative output tokens in current call
+    last_user_ts = None
+    first_assistant_ts = None
+    last_assistant_ts = None
+    call_output_tokens = 0
+    call_thinking_tokens = 0
+    call_prompt_tokens = 0
+    seen_thinking = False
+
+    def _finalize():
+        nonlocal calls
+        if last_user_ts is not None and first_assistant_ts is not None:
+            ttft = first_assistant_ts - last_user_ts
+            if ttft >= 0:
+                ttft_list.append(ttft)
+
+        if first_assistant_ts is not None and last_assistant_ts is not None \
+                and call_output_tokens > 1:
+            gen_time = last_assistant_ts - first_assistant_ts
+            if gen_time > 0:
+                tpot_list.append(gen_time / (call_output_tokens - 1))
+
+        if call_prompt_tokens > 0:
+            prompt_tokens_list.append(call_prompt_tokens)
+        if call_output_tokens > 0:
+            thinking_tokens_list.append(call_thinking_tokens)
+            response_tokens_list.append(call_output_tokens - call_thinking_tokens)
+
+        calls += 1
 
     for msg in messages:
         msg_type = msg.get("type")
@@ -95,19 +125,17 @@ def compute_llm_metrics(session_id: str) -> dict:
             continue
 
         if msg_type == "user":
-            # If we had an in-progress call, finalize it
+            # Finalize previous call if in progress
             if first_assistant_ts is not None:
-                _finalize_call(
-                    ttft_list, tpot_list,
-                    last_user_ts, first_assistant_ts, last_assistant_ts,
-                    call_output_tokens,
-                )
-                calls += 1
+                _finalize()
 
             last_user_ts = ts
             first_assistant_ts = None
             last_assistant_ts = None
             call_output_tokens = 0
+            call_thinking_tokens = 0
+            call_prompt_tokens = 0
+            seen_thinking = False
 
         elif msg_type == "assistant" and last_user_ts is not None:
             if first_assistant_ts is None:
@@ -115,57 +143,63 @@ def compute_llm_metrics(session_id: str) -> dict:
 
             last_assistant_ts = ts
 
-            # Track output tokens from usage
-            usage = msg.get("message", {}).get("usage", {})
+            inner = msg.get("message", {})
+            usage = inner.get("usage", {})
             out_tok = usage.get("output_tokens")
             if out_tok is not None:
-                call_output_tokens = out_tok  # cumulative, use the latest
+                call_output_tokens = out_tok  # cumulative
 
-            stop_reason = msg.get("message", {}).get("stop_reason")
+            # Prompt tokens = input + cache_read + cache_creation
+            inp = usage.get("input_tokens", 0)
+            cache_read = usage.get("cache_read_input_tokens", 0)
+            cache_create = usage.get("cache_creation_input_tokens", 0)
+            total_prompt = inp + cache_read + cache_create
+            if total_prompt > call_prompt_tokens:
+                call_prompt_tokens = total_prompt
+
+            # Track thinking tokens from first thinking block
+            if not seen_thinking:
+                content = inner.get("content", [])
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "thinking":
+                        seen_thinking = True
+                        if out_tok is not None:
+                            call_thinking_tokens = out_tok
+                        break
+
+            stop_reason = inner.get("stop_reason")
             if stop_reason in ("tool_use", "end_turn"):
-                _finalize_call(
-                    ttft_list, tpot_list,
-                    last_user_ts, first_assistant_ts, last_assistant_ts,
-                    call_output_tokens,
-                )
-                calls += 1
-                # Reset for next call (will start when next user msg arrives)
+                _finalize()
                 first_assistant_ts = None
                 last_assistant_ts = None
                 call_output_tokens = 0
+                call_thinking_tokens = 0
+                call_prompt_tokens = 0
+                seen_thinking = False
 
-    # Handle any unfinished call
+    # Handle unfinished call
     if first_assistant_ts is not None:
-        _finalize_call(
-            ttft_list, tpot_list,
-            last_user_ts, first_assistant_ts, last_assistant_ts,
-            call_output_tokens,
-        )
-        calls += 1
+        _finalize()
 
     return {
         "ttft_list": ttft_list,
         "tpot_list": tpot_list,
+        "prompt_tokens_list": prompt_tokens_list,
+        "thinking_tokens_list": thinking_tokens_list,
+        "response_tokens_list": response_tokens_list,
         "calls": calls,
     }
 
 
-def _finalize_call(
-    ttft_list: list, tpot_list: list,
-    user_ts: Optional[float], first_ts: Optional[float], last_ts: Optional[float],
-    output_tokens: int,
-) -> None:
-    """Compute TTFT and TPOT for a completed LLM call."""
-    if user_ts is not None and first_ts is not None:
-        ttft = first_ts - user_ts
-        if ttft >= 0:
-            ttft_list.append(ttft)
-
-    if first_ts is not None and last_ts is not None and output_tokens > 1:
-        gen_time = last_ts - first_ts
-        if gen_time > 0:
-            tpot = gen_time / (output_tokens - 1)
-            tpot_list.append(tpot)
+def _empty_llm_metrics() -> dict:
+    return {
+        "ttft_list": [],
+        "tpot_list": [],
+        "prompt_tokens_list": [],
+        "thinking_tokens_list": [],
+        "response_tokens_list": [],
+        "calls": 0,
+    }
 
 
 def load_pairs(session_id: str) -> List[dict]:
