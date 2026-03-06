@@ -1,6 +1,7 @@
 """CLI entry point for claude-profiler."""
 
 import argparse
+import json
 from datetime import datetime, timedelta
 
 
@@ -146,6 +147,19 @@ def cmd_stats(args):
         print(f"    Other/untracked:   {format_duration(unaccounted):>10s}  ({pct(unaccounted, total):>5s})")
     print()
 
+    # LLM Performance
+    if stats.get("ttft_samples") or stats.get("tpot_samples"):
+        print("  LLM Performance:")
+        if stats["ttft_samples"]:
+            print(f"    TTFT (Time to First Token):")
+            print(f"      Average:  {format_duration(stats['ttft_avg']):>10s}  ({stats['ttft_samples']} samples)")
+            print(f"      Max:      {format_duration(stats['ttft_max']):>10s}")
+        if stats["tpot_samples"]:
+            print(f"    TPOT (Time Per Output Token):")
+            print(f"      Average:  {stats['tpot_avg']*1000:>10.1f}ms  ({stats['tpot_samples']} samples)")
+            print(f"      Max:      {stats['tpot_max']*1000:>10.1f}ms")
+        print()
+
     # Tool breakdown
     if stats["tool_breakdown"]:
         print("  Tool Breakdown:")
@@ -229,6 +243,21 @@ def cmd_session_detail(args):
     print(f"  User idle:         {format_duration(result['idle_time']):>10s}  ({pct(result['idle_time'], total):>5s})")
     print()
 
+    # TTFT/TPOT per session
+    ttft_list = result.get("ttft_list", [])
+    tpot_list = result.get("tpot_list", [])
+    if ttft_list or tpot_list:
+        print("LLM Performance:")
+        if ttft_list:
+            avg_ttft = sum(ttft_list) / len(ttft_list)
+            max_ttft = max(ttft_list)
+            print(f"  TTFT avg: {format_duration(avg_ttft)}  max: {format_duration(max_ttft)}  ({len(ttft_list)} turns)")
+        if tpot_list:
+            avg_tpot = sum(tpot_list) / len(tpot_list)
+            max_tpot = max(tpot_list)
+            print(f"  TPOT avg: {avg_tpot*1000:.1f}ms  max: {max_tpot*1000:.1f}ms  ({len(tpot_list)} turns)")
+        print()
+
     if result["tool_breakdown"]:
         print("Tool Breakdown:")
         for tool, dur in sorted(result["tool_breakdown"].items(), key=lambda x: x[1], reverse=True):
@@ -246,6 +275,76 @@ def cmd_session_detail(args):
             if tool:
                 line += f"  {tool}"
             print(line)
+
+
+def cmd_pairs(args):
+    """Show prompt/response pairs for a session."""
+    import os
+    from claude_profiler.collector import PAIRS_DIR
+
+    filepath = os.path.join(PAIRS_DIR, f"{args.session_id}.jsonl")
+    if not os.path.isfile(filepath):
+        print(f"No pairs data found for session {args.session_id}")
+        return
+
+    pairs = []
+    with open(filepath) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                pairs.append(json.loads(line))
+
+    if args.type:
+        pairs = [p for p in pairs if p.get("type") == args.type]
+
+    if not pairs:
+        print("No matching pairs found.")
+        return
+
+    limit = args.last or len(pairs)
+    pairs = pairs[-limit:]
+
+    for i, p in enumerate(pairs):
+        ts = datetime.fromtimestamp(p["ts"]).strftime("%H:%M:%S")
+        ptype = p.get("type", "unknown")
+        print(f"--- [{i+1}] {ts} {ptype} ---")
+
+        if ptype == "tool_call":
+            print(f"Tool: {p.get('tool_name', '?')}")
+            _print_truncated("Input", p.get("input"), args.full)
+        elif ptype == "tool_result":
+            print(f"Tool: {p.get('tool_name', '?')}")
+            _print_truncated("Output", p.get("output"), args.full)
+        elif ptype == "model_response":
+            if p.get("stop_reason"):
+                print(f"Stop reason: {p['stop_reason']}")
+            if p.get("input_tokens") or p.get("output_tokens"):
+                print(f"Tokens: in={p.get('input_tokens', '?')} out={p.get('output_tokens', '?')}")
+            usage = p.get("usage")
+            if usage and isinstance(usage, dict):
+                print(f"Usage: {json.dumps(usage)}")
+            _print_truncated("Message", p.get("message"), args.full)
+        print()
+
+
+def _print_truncated(label: str, value, full: bool = False):
+    """Print a value, truncating if too long."""
+    if value is None:
+        return
+    if isinstance(value, dict):
+        text = json.dumps(value, indent=2, ensure_ascii=False)
+    elif isinstance(value, list):
+        text = json.dumps(value, indent=2, ensure_ascii=False)
+    else:
+        text = str(value)
+
+    max_len = 2000
+    if not full and len(text) > max_len:
+        print(f"{label} ({len(text)} chars, truncated):")
+        print(text[:max_len] + "\n  ... [truncated, use --full to see all]")
+    else:
+        print(f"{label}:")
+        print(text)
 
 
 def cmd_export(args):
@@ -317,6 +416,15 @@ def main():
     p_session.add_argument("--timeline", "-t", action="store_true",
                            help="Show event timeline")
 
+    # pairs (view prompt/response pairs)
+    p_pairs = sub.add_parser("pairs", help="Show prompt/response pairs for a session")
+    p_pairs.add_argument("session_id", help="Session ID")
+    p_pairs.add_argument("--type", choices=["tool_call", "tool_result", "model_response"],
+                         help="Filter by pair type")
+    p_pairs.add_argument("--last", type=int, help="Show only last N entries")
+    p_pairs.add_argument("--full", action="store_true",
+                         help="Show full content without truncation")
+
     # export
     p_export = sub.add_parser("export", help="Export data as JSON")
     p_export.add_argument("--period", "-p", default="all")
@@ -337,6 +445,7 @@ def main():
         "sessions": cmd_sessions,
         "session": cmd_session_detail,
         "export": cmd_export,
+        "pairs": cmd_pairs,
     }
 
     commands[args.command](args)

@@ -6,6 +6,7 @@ import sys
 import time
 
 DATA_DIR = os.path.expanduser("~/.claude-profiler/sessions")
+PAIRS_DIR = os.path.expanduser("~/.claude-profiler/pairs")
 
 
 def log_event(event_type: str) -> None:
@@ -49,3 +50,59 @@ def log_event(event_type: str) -> None:
     filepath = os.path.join(DATA_DIR, f"{session_id}.jsonl")
     with open(filepath, "a") as f:
         f.write(json.dumps(event) + "\n")
+
+    # Save prompt/response pairs to a separate file
+    _save_pair(session_id, event_type, event["ts"], data)
+
+
+def _save_pair(session_id: str, event_type: str, ts: float, data: dict) -> None:
+    """Save tool input/output and model responses for prompt/response tracking."""
+    pair = None
+
+    if event_type == "pre_tool_use":
+        tool_name = data.get("tool_name")
+        tool_input = data.get("tool_input")
+        if tool_name and tool_input is not None:
+            pair = {
+                "ts": ts,
+                "type": "tool_call",
+                "session_id": session_id,
+                "tool_name": tool_name,
+                "input": tool_input,
+            }
+
+    elif event_type == "post_tool_use":
+        tool_name = data.get("tool_name")
+        tool_output = data.get("tool_output")
+        if tool_name and tool_output is not None:
+            pair = {
+                "ts": ts,
+                "type": "tool_result",
+                "session_id": session_id,
+                "tool_name": tool_name,
+                "output": tool_output,
+            }
+
+    elif event_type == "stop":
+        message = data.get("message")
+        usage = data.get("usage")
+        pair = {
+            "ts": ts,
+            "type": "model_response",
+            "session_id": session_id,
+            "stop_reason": data.get("stop_reason"),
+        }
+        if message is not None:
+            pair["message"] = message
+        if usage:
+            pair["usage"] = usage
+        # Also capture input/output tokens at top level if present
+        for key in ("input_tokens", "output_tokens"):
+            if key in data:
+                pair[key] = data[key]
+
+    if pair is not None:
+        os.makedirs(PAIRS_DIR, exist_ok=True)
+        filepath = os.path.join(PAIRS_DIR, f"{session_id}.jsonl")
+        with open(filepath, "a") as f:
+            f.write(json.dumps(pair) + "\n")
