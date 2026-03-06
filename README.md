@@ -84,21 +84,27 @@ Example output:
     User idle:            34m 16s  (65.3%)
 
   LLM Performance:
-    TTFT (Time to First Token):
-      Average:        8.4s  (138 samples)
+    TTFT (Time to First Token):  (138 samples)
+      Min:            39ms
+      Median:         4.5s
+      Average:        8.4s
       Max:          3m 10s
-    TPOT (Time Per Output Token):
-      Average:        14.3ms  (64 samples)
-      Max:           260.0ms
+    TPOT (Time Per Output Token):  (38 samples)
+      Min:             6.0ms
+      Median:          8.7ms
+      Average:         9.3ms
+      Max:            19.2ms
     TPS (Tokens Per Second):
-      Average:        70.1
-      Min:             3.8
+      Min:            52.0
+      Median:        114.4
+      Average:       107.2
+      Max:           166.9
 
   Token Breakdown (per LLM call):
-                                Avg     Median        Max  Samples
-    Prompt tokens             53414      54536     114380      138
-    Thinking tokens               1          0         12      138
-    Response tokens             561        182      11353      138
+                                Min     Median        Avg        Max  Samples
+    Prompt tokens              5351      54063      53996     121152      138
+    Thinking tokens               0          0        166      11225      138
+    Response tokens               1        192        390       3222      138
 
   Tool Breakdown:
     Bash                     1m 02s  (87.7%)    39 calls  avg 1.6s
@@ -168,11 +174,11 @@ claude-profiler export -p month -o monthly.json
 | **Tool execution time** | Time spent executing tools (Bash, Read, Edit, Write, etc.) |
 | **User idle time** | Time between Claude finishing and the user's next input |
 | **Per-tool breakdown** | Execution time and call count per tool type |
-| **TTFT** | Time to First Token — from prompt sent to first response token |
-| **TPOT** | Time Per Output Token — generation latency per token |
-| **TPS** | Tokens Per Second — output generation throughput (= 1/TPOT) |
+| **TTFT** | Time to First Token — from prompt sent to first response token (min/median/avg/max) |
+| **TPOT** | Time Per Output Token — generation latency per response token (min/median/avg/max) |
+| **TPS** | Tokens Per Second — output generation throughput, = 1/TPOT (min/median/avg/max) |
 | **Prompt tokens** | Input tokens per LLM call (including cached tokens) |
-| **Thinking tokens** | Tokens used for model's chain-of-thought reasoning |
+| **Thinking tokens** | Tokens used for model's chain-of-thought reasoning (estimated by character ratio) |
 | **Response tokens** | Output tokens for text and tool calls |
 
 ## How It Works
@@ -194,8 +200,8 @@ Events are stored as JSONL files in `~/.claude-profiler/sessions/`.
 
 Reads Claude Code's conversation history from `~/.claude/projects/` to extract:
 
-- **TTFT/TPOT/TPS** — computed from per-message timestamps and cumulative `output_tokens` in streaming assistant messages
-- **Token breakdown** — `input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens` for prompt; cumulative `output_tokens` at thinking vs. final block for thinking/response split
+- **TTFT/TPOT/TPS** — computed from per-message timestamps and `output_tokens` in assistant messages. TPOT uses response tokens only (excluding thinking) and measures from the first non-thinking message for accuracy. Samples with <10 response tokens or <2s generation time are filtered out.
+- **Token breakdown** — `input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens` for prompt; thinking/response split estimated by character ratio of thinking vs text/tool_use content blocks
 - **Prompt/response pairs** — full message content (user prompts, thinking, text, tool_use blocks)
 
 ### Time Breakdown Logic
