@@ -216,6 +216,7 @@ def aggregate_stats(since: Optional[datetime] = None,
     session_details = []
     all_ttft = []
     all_tpot = []
+    all_decode_time = []
     all_prompt_tokens = []
     all_thinking_tokens = []
     all_response_tokens = []
@@ -240,6 +241,7 @@ def aggregate_stats(since: Optional[datetime] = None,
         llm_metrics = compute_llm_metrics(session_info["session_id"])
         all_ttft.extend(llm_metrics["ttft_list"])
         all_tpot.extend(llm_metrics["tpot_list"])
+        all_decode_time.extend(llm_metrics["decode_time_list"])
         all_prompt_tokens.extend(llm_metrics["prompt_tokens_list"])
         all_thinking_tokens.extend(llm_metrics["thinking_tokens_list"])
         all_response_tokens.extend(llm_metrics["response_tokens_list"])
@@ -250,6 +252,7 @@ def aggregate_stats(since: Optional[datetime] = None,
             "llm_calls": llm_metrics["calls"],
             "ttft_list": llm_metrics["ttft_list"],
             "tpot_list": llm_metrics["tpot_list"],
+            "decode_time_list": llm_metrics["decode_time_list"],
         })
 
     return {
@@ -265,6 +268,7 @@ def aggregate_stats(since: Optional[datetime] = None,
         "sessions": session_details,
         "ttft": _list_stats(all_ttft),
         "tpot": _list_stats(all_tpot),
+        "decode_time": _list_stats(all_decode_time),
         "prompt_tokens": _list_stats(all_prompt_tokens),
         "thinking_tokens": _list_stats(all_thinking_tokens),
         "response_tokens": _list_stats(all_response_tokens),

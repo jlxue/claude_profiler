@@ -86,6 +86,7 @@ def compute_llm_metrics(session_id: str) -> dict:
 
     ttft_list = []
     tpot_list = []
+    decode_time_list = []
     prompt_tokens_list = []
     thinking_tokens_list = []
     response_tokens_list = []
@@ -118,6 +119,12 @@ def compute_llm_metrics(session_id: str) -> dict:
             ttft = first_assistant_ts - last_user_ts
             if ttft >= 0:
                 ttft_list.append(ttft)
+
+        # Decode time: first assistant token to last assistant token
+        if first_assistant_ts is not None and last_assistant_ts is not None:
+            decode_t = last_assistant_ts - first_assistant_ts
+            if decode_t > 0:
+                decode_time_list.append(decode_t)
 
         est_thinking, est_response = _estimate_token_split()
 
@@ -223,6 +230,7 @@ def compute_llm_metrics(session_id: str) -> dict:
     return {
         "ttft_list": ttft_list,
         "tpot_list": tpot_list,
+        "decode_time_list": decode_time_list,
         "prompt_tokens_list": prompt_tokens_list,
         "thinking_tokens_list": thinking_tokens_list,
         "response_tokens_list": response_tokens_list,
@@ -234,6 +242,7 @@ def _empty_llm_metrics() -> dict:
     return {
         "ttft_list": [],
         "tpot_list": [],
+        "decode_time_list": [],
         "prompt_tokens_list": [],
         "thinking_tokens_list": [],
         "response_tokens_list": [],

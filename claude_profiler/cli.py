@@ -150,7 +150,8 @@ def cmd_stats(args):
     # LLM Performance
     ttft = stats.get("ttft", {})
     tpot = stats.get("tpot", {})
-    if ttft.get("samples") or tpot.get("samples"):
+    decode_time = stats.get("decode_time", {})
+    if ttft.get("samples") or tpot.get("samples") or decode_time.get("samples"):
         print("  LLM Performance:")
         if ttft["samples"]:
             print(f"    TTFT (Time to First Token):  ({ttft['samples']} samples)")
@@ -158,6 +159,12 @@ def cmd_stats(args):
             print(f"      Median:   {format_duration(ttft['median']):>10s}")
             print(f"      Average:  {format_duration(ttft['avg']):>10s}")
             print(f"      Max:      {format_duration(ttft['max']):>10s}")
+        if decode_time.get("samples"):
+            print(f"    Decode Time (First→Last Token):  ({decode_time['samples']} samples)")
+            print(f"      Min:      {format_duration(decode_time['min']):>10s}")
+            print(f"      Median:   {format_duration(decode_time['median']):>10s}")
+            print(f"      Average:  {format_duration(decode_time['avg']):>10s}")
+            print(f"      Max:      {format_duration(decode_time['max']):>10s}")
         if tpot["samples"]:
             tps_avg = 1.0 / tpot["avg"] if tpot["avg"] > 0 else 0
             tps_min = 1.0 / tpot["max"] if tpot["max"] > 0 else 0
@@ -276,7 +283,7 @@ def cmd_session_detail(args):
 
     # TTFT/TPOT from conversation data
     llm = compute_llm_metrics(args.session_id)
-    if llm["ttft_list"] or llm["tpot_list"]:
+    if llm["ttft_list"] or llm["tpot_list"] or llm["decode_time_list"]:
         from claude_profiler.analyzer import _list_stats
         print(f"LLM Performance ({llm['calls']} API calls):")
         if llm["ttft_list"]:
@@ -286,6 +293,13 @@ def cmd_session_detail(args):
             print(f"    Median:   {format_duration(ttft['median']):>10s}")
             print(f"    Average:  {format_duration(ttft['avg']):>10s}")
             print(f"    Max:      {format_duration(ttft['max']):>10s}")
+        if llm["decode_time_list"]:
+            dt = _list_stats(llm["decode_time_list"])
+            print(f"  Decode Time (First→Last Token):  ({dt['samples']} samples)")
+            print(f"    Min:      {format_duration(dt['min']):>10s}")
+            print(f"    Median:   {format_duration(dt['median']):>10s}")
+            print(f"    Average:  {format_duration(dt['avg']):>10s}")
+            print(f"    Max:      {format_duration(dt['max']):>10s}")
         if llm["tpot_list"]:
             tpot = _list_stats(llm["tpot_list"])
             tps_avg = 1.0 / tpot["avg"] if tpot["avg"] > 0 else 0
